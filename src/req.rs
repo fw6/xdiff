@@ -1,4 +1,4 @@
-use anyhow::{Ok, Result};
+use anyhow::{anyhow, Ok, Result};
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE},
     Client, Method, Response, Url,
@@ -48,6 +48,28 @@ impl RequestProfile {
         let res = client.execute(req).await?;
 
         Ok(ResponseExt(res))
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        if let Some(params) = self.params.as_ref() {
+            if !params.is_object() {
+                return Err(anyhow!(
+                    "params must be an object but got\n{}",
+                    serde_yaml::to_string(params)?
+                ));
+            }
+        }
+
+        if let Some(body) = self.body.as_ref() {
+            if !body.is_object() {
+                return Err(anyhow!(
+                    "body must be an object but got\n{}",
+                    serde_yaml::to_string(body)?
+                ));
+            }
+        }
+
+        Ok(())
     }
 
     pub fn generate(&self, args: &ExtraArgs) -> Result<(HeaderMap, serde_json::Value, String)> {
@@ -101,7 +123,7 @@ impl ResponseExt {
 
         let mut output = get_header_text(&res, &profile.skip_headers)?;
 
-        let content_type = get_content_type(&res.headers());
+        let content_type = get_content_type(res.headers());
         let text = res.text().await?;
 
         match content_type.as_deref() {
@@ -121,21 +143,16 @@ impl ResponseExt {
 pub fn get_content_type(headers: &HeaderMap) -> Option<String> {
     headers
         .get(CONTENT_TYPE)
-        .map(|v| v.to_str().unwrap().split(";").next())
-        .flatten()
-        .map(|v| v.to_string())
+        .and_then(|v| v.to_str().unwrap().split(';').next().map(|s| s.to_string()))
 }
 
 fn filter_json(text: &str, skip_body: &[String]) -> Result<String> {
     let mut json = serde_json::from_str::<serde_json::Value>(text)?;
 
-    match json {
-        serde_json::Value::Object(ref mut obj) => {
-            for k in skip_body {
-                obj.remove(k);
-            }
+    if let serde_json::Value::Object(ref mut obj) = json {
+        for k in skip_body {
+            obj.remove(k);
         }
-        _ => {}
     }
 
     Ok(serde_json::to_string_pretty(&json)?)

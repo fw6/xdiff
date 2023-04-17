@@ -14,6 +14,8 @@ todo:
       - cf-ray
       - x-ratelimit-reset
       - date
+    skip_body:
+      - id
 
 rust:
   req1:
