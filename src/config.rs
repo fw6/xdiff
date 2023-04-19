@@ -23,6 +23,12 @@ pub struct DiffProfile {
     pub res: ResponseProfile,
 }
 
+impl DiffProfile {
+    pub fn new(req1: RequestProfile, req2: RequestProfile, res: ResponseProfile) -> Self {
+        Self { req1, req2, res }
+    }
+}
+
 fn is_default<T: Default + PartialEq>(t: &T) -> bool {
     t == &T::default()
 }
@@ -36,7 +42,20 @@ pub struct ResponseProfile {
     pub skip_body: Vec<String>,
 }
 
+impl ResponseProfile {
+    pub fn new(skip_headers: Vec<String>, skip_body: Vec<String>) -> Self {
+        Self {
+            skip_headers,
+            skip_body,
+        }
+    }
+}
+
 impl DiffConfig {
+    pub fn new(profiles: HashMap<String, DiffProfile>) -> Self {
+        Self { profiles }
+    }
+
     pub async fn load_yaml(path: &str) -> Result<Self> {
         let content = fs::read_to_string(path).await?;
         Self::from_yaml(&content)

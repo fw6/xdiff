@@ -18,7 +18,7 @@ pub struct RequestProfile {
 
     pub url: Url,
 
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "empty_json_value", default)]
     pub params: Option<serde_json::Value>,
 
     #[serde(
@@ -28,6 +28,7 @@ pub struct RequestProfile {
     )]
     pub headers: HeaderMap,
 
+    #[serde(skip_serializing_if = "empty_json_value", default)]
     pub body: Option<serde_json::Value>,
 }
 
@@ -115,6 +116,46 @@ impl RequestProfile {
             _ => Err(anyhow::anyhow!("Unsupported content type!")),
         }
     }
+
+    pub fn new(
+        method: Method,
+        url: Url,
+        params: Option<serde_json::Value>,
+        headers: HeaderMap,
+        body: Option<serde_json::Value>,
+    ) -> Self {
+        Self {
+            method,
+            url,
+            params,
+            headers,
+            body,
+        }
+    }
+}
+
+impl FromStr for RequestProfile {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        let mut url = Url::parse(s)?;
+
+        let qs = url.query_pairs();
+        let mut params = json!({});
+        for (k, v) in qs {
+            params[&*k] = v.parse()?;
+        }
+
+        url.set_query(None);
+
+        Ok(RequestProfile::new(
+            Method::GET,
+            url,
+            Some(params),
+            HeaderMap::new(),
+            None,
+        ))
+    }
 }
 
 impl ResponseExt {
@@ -137,6 +178,14 @@ impl ResponseExt {
         }
 
         Ok(output)
+    }
+
+    pub fn get_header_keys(&self) -> Vec<String> {
+        self.0
+            .headers()
+            .keys()
+            .map(|k| k.as_str().to_string())
+            .collect()
     }
 }
 
@@ -173,4 +222,16 @@ fn get_header_text(res: &Response, skip_headers: &[String]) -> Result<String> {
     writeln!(output)?;
 
     Ok(output)
+}
+
+fn empty_json_value(v: &Option<serde_json::Value>) -> bool {
+    v.as_ref().map_or(true, |v| {
+        if v.is_object() {
+            if let Some(obj) = v.as_object() {
+                return obj.is_empty();
+            }
+        }
+
+        true
+    })
 }
