@@ -6,7 +6,7 @@ use dialoguer::{theme::ColorfulTheme, Input, MultiSelect};
 use serde_yaml;
 use xdiff::{
     cli::{Action, Args, RunArgs},
-    DiffConfig, DiffProfile, ExtraArgs, RequestProfile, ResponseProfile,
+    highlight_text, DiffConfig, DiffProfile, ExtraArgs, RequestProfile, ResponseProfile,
 };
 
 #[tokio::main]
@@ -82,7 +82,7 @@ async fn parse() -> Result<()> {
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
 
-    write!(stdout, "{}", result)?;
+    write!(stdout, "{}", highlight_text(&result, "yaml")?)?;
 
     Ok(())
 }
