@@ -1,26 +1,62 @@
 use std::io::Write;
 
 use anyhow::{Ok, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use dialoguer::{theme::ColorfulTheme, Input, MultiSelect};
 use serde_yaml;
 use xdiff::{
-    cli::{Action, Args, RunArgs},
-    highlight_text, DiffConfig, DiffProfile, ExtraArgs, RequestProfile, ResponseProfile,
+    cli::{parse_key_value, KeyVal},
+    highlight_text, process_error_output, DiffConfig, DiffProfile, ExtraArgs, LoadConfig,
+    RequestProfile, ResponseProfile,
 };
+
+/// Diff two http requests and compare the difference of the responses
+#[derive(Parser, Debug, Clone)]
+#[clap(version = "0.1.0", author = "Misky <fengwei5@foxmail.com>")]
+pub struct Args {
+    #[clap(subcommand)]
+    action: Action,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+#[non_exhaustive]
+enum Action {
+    /// Diff two API response based on given profile.
+    Run(RunArgs),
+
+    /// Parse URLs to generate a profile.
+    Parse,
+}
+
+#[derive(Parser, Debug, Clone)]
+struct RunArgs {
+    /// The profile name
+    #[clap(short, long, value_parser)]
+    profile: String,
+
+    /// Overrides args. Could be used to override the query, headers and body of the request.
+    /// for query params, use `-e key=value`
+    /// for headers, use `-e %key=value`
+    /// for body, use `-e @key=value`
+    #[clap(short, long, value_parser = parse_key_value, number_of_values = 1)]
+    extra_params: Vec<KeyVal>,
+
+    /// Configuration to use
+    #[clap(short, long, value_parser)]
+    config: Option<String>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    // let config = args.config();
 
-    match args.action {
-        Action::Run(args) => run(args).await?,
-        Action::Parse => parse().await?,
-        _ => panic!("Not implemented yet"),
-    }
+    let result = match args.action {
+        Action::Run(args) => run(args).await,
+        Action::Parse => parse().await,
+        // _ => panic!("Not implemented yet"),
+    };
 
-    Ok(())
+    process_error_output(result)
 }
 
 async fn run(args: RunArgs) -> Result<()> {
@@ -82,7 +118,11 @@ async fn parse() -> Result<()> {
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
 
-    write!(stdout, "{}", highlight_text(&result, "yaml")?)?;
+    if atty::is(atty::Stream::Stdout) {
+        write!(stdout, "{}", highlight_text(&result, "yaml", None)?)?;
+    } else {
+        write!(stdout, "{}", result)?;
+    }
 
     Ok(())
 }

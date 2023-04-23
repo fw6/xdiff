@@ -1,15 +1,51 @@
 use anyhow::{anyhow, Ok, Result};
+use async_trait::async_trait;
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE},
     Client, Method, Response, Url,
 };
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
 use serde_urlencoded;
+use serde_yaml;
 use std::fmt::Write;
 use std::str::FromStr;
+use tokio::fs;
 
-use crate::{cli::KeyValType, ExtraArgs, ResponseProfile};
+use crate::{cli::KeyValType, ExtraArgs};
+
+mod xdiff;
+mod xreq;
+
+pub use xdiff::{DiffConfig, DiffProfile, ResponseProfile};
+pub use xreq::RequestConfig;
+
+#[async_trait]
+pub trait LoadConfig
+where
+    Self: Sized + DeserializeOwned + ValidateConfig,
+{
+    /// Load config from yaml file
+    async fn load_yaml(path: &str) -> Result<Self> {
+        let content = fs::read_to_string(path).await?;
+        Self::from_yaml(&content)
+    }
+
+    /// Load config from yaml string
+    fn from_yaml(content: &str) -> Result<Self> {
+        let config: Self = serde_yaml::from_str(content)?;
+        config.validate()?;
+        Ok(config)
+    }
+}
+
+pub trait ValidateConfig {
+    fn validate(&self) -> Result<()>;
+}
+
+pub fn is_default<T: Default + PartialEq>(t: &T) -> bool {
+    t == &T::default()
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RequestProfile {
@@ -51,29 +87,7 @@ impl RequestProfile {
         Ok(ResponseExt(res))
     }
 
-    pub(crate) fn validate(&self) -> Result<()> {
-        if let Some(params) = self.params.as_ref() {
-            if !params.is_object() {
-                return Err(anyhow!(
-                    "params must be an object but got\n{}",
-                    serde_yaml::to_string(params)?
-                ));
-            }
-        }
-
-        if let Some(body) = self.body.as_ref() {
-            if !body.is_object() {
-                return Err(anyhow!(
-                    "body must be an object but got\n{}",
-                    serde_yaml::to_string(body)?
-                ));
-            }
-        }
-
-        Ok(())
-    }
-
-    pub fn generate(&self, args: &ExtraArgs) -> Result<(HeaderMap, serde_json::Value, String)> {
+    fn generate(&self, args: &ExtraArgs) -> Result<(HeaderMap, serde_json::Value, String)> {
         let mut header = self.headers.clone();
         let mut query = self.params.clone().unwrap_or_else(|| json!({}));
         let mut body = self.body.clone().unwrap_or_else(|| json!({}));
@@ -132,6 +146,42 @@ impl RequestProfile {
             body,
         }
     }
+
+    pub fn get_url(&self, args: &ExtraArgs) -> Result<String> {
+        let (_, params, _) = self.generate(args)?;
+        // let params = self.params.clone();
+        let mut url = self.url.clone();
+
+        if !params.as_object().unwrap().is_empty() {
+            let query = serde_qs::to_string(&params)?;
+            url.set_query(Some(&query));
+        }
+        Ok(url.into())
+    }
+}
+
+impl ValidateConfig for RequestProfile {
+    fn validate(&self) -> Result<()> {
+        if let Some(params) = self.params.as_ref() {
+            if !params.is_object() {
+                return Err(anyhow!(
+                    "params must be an object but got\n{}",
+                    serde_yaml::to_string(params)?
+                ));
+            }
+        }
+
+        if let Some(body) = self.body.as_ref() {
+            if !body.is_object() {
+                return Err(anyhow!(
+                    "body must be an object but got\n{}",
+                    serde_yaml::to_string(body)?
+                ));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl FromStr for RequestProfile {
@@ -159,23 +209,25 @@ impl FromStr for RequestProfile {
 }
 
 impl ResponseExt {
+    pub fn into_inner(self) -> Response {
+        self.0
+    }
+
     pub async fn get_text(self, profile: &ResponseProfile) -> Result<String> {
         let res = self.0;
 
-        let mut output = get_header_text(&res, &profile.skip_headers)?;
+        let mut output = get_status_text(&res)?;
+        write!(
+            &mut output,
+            "{}",
+            get_header_text(&res, &profile.skip_headers)?
+        )?;
 
-        let content_type = get_content_type(res.headers());
-        let text = res.text().await?;
-
-        match content_type.as_deref() {
-            Some("application/json") => {
-                let text = filter_json(&text, &profile.skip_body)?;
-                writeln!(output, "{}", &text)?;
-            }
-            _ => {
-                writeln!(output, "{}", &text)?;
-            }
-        }
+        write!(
+            &mut output,
+            "{}",
+            get_body_text(res, &profile.skip_body).await?
+        )?;
 
         Ok(output)
     }
@@ -207,11 +259,9 @@ fn filter_json(text: &str, skip_body: &[String]) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json)?)
 }
 
-fn get_header_text(res: &Response, skip_headers: &[String]) -> Result<String> {
+pub fn get_header_text(res: &Response, skip_headers: &[String]) -> Result<String> {
     let headers = res.headers();
     let mut output = String::new();
-
-    writeln!(output, "{:?} {}", res.version(), res.status())?;
 
     for (k, v) in headers.iter() {
         if !skip_headers.contains(&k.to_string()) {
@@ -222,6 +272,20 @@ fn get_header_text(res: &Response, skip_headers: &[String]) -> Result<String> {
     writeln!(output)?;
 
     Ok(output)
+}
+
+pub fn get_status_text(res: &Response) -> Result<String> {
+    Ok(format!("{:?} {}\n", res.version(), res.status()))
+}
+
+pub async fn get_body_text(res: Response, skip_body: &[String]) -> Result<String> {
+    let content_type = get_content_type(&res.headers());
+    let text = res.text().await?;
+
+    match content_type.as_deref() {
+        Some("application/json") => filter_json(&text, skip_body),
+        _ => Ok(text),
+    }
 }
 
 fn empty_json_value(v: &Option<serde_json::Value>) -> bool {
