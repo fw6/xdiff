@@ -275,7 +275,7 @@ pub fn get_header_text(res: &Response, skip_headers: &[String]) -> Result<String
 }
 
 pub fn get_status_text(res: &Response) -> Result<String> {
-    Ok(format!("{:?} {}\n", res.version(), res.status()))
+    Ok(format!("{:?} {}", res.version(), res.status()))
 }
 
 pub async fn get_body_text(res: Response, skip_body: &[String]) -> Result<String> {
@@ -298,4 +298,163 @@ fn empty_json_value(v: &Option<serde_json::Value>) -> bool {
 
         true
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use reqwest::{header, StatusCode};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn request_profile_send_should_work() {
+        let mut server = mockito::Server::new();
+
+        let _mock = mock_for_url(
+            &mut server,
+            "/todo?a=1&b=2",
+            json!({"id":1, "title": "todo"}),
+        );
+
+        let res = get_response(server, "/todo?a=1&b=2", &Default::default()).await;
+
+        assert_eq!(res.into_inner().status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn request_profile_send_with_args_should_work() {
+        let mut server = mockito::Server::new();
+
+        let _mock = mock_for_url(
+            &mut server,
+            "/todo?a=1&b=2",
+            json!({"id":1, "title": "todo"}),
+        );
+        let args =
+            ExtraArgs::new_with_query(vec![("a".into(), "1".into()), ("b".into(), "2".into())]);
+
+        let res = get_response(server, "/todo?a=1&b=2", &args).await;
+
+        assert_eq!(res.into_inner().status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn request_profile_get_url_should_work() {
+        let profile = get_profile("http://localhost:8080", "/todo?c=3&d=4");
+
+        assert_eq!(
+            profile.get_url(&Default::default()).unwrap(),
+            "http://localhost:8080/todo?c=3&d=4"
+        );
+    }
+
+    #[test]
+    fn request_profile_get_url_with_args_should_work() {
+        let profile = get_profile("http://localhost:8080", "/todo?a=1&b=2");
+
+        let args =
+            ExtraArgs::new_with_query(vec![("b".into(), "2".into()), ("a".into(), "1".into())]);
+
+        assert_eq!(
+            profile.get_url(&args).unwrap(),
+            "http://localhost:8080/todo?a=1&b=2"
+        );
+    }
+
+    #[test]
+    fn test_get_content_type() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+
+        assert_eq!(
+            get_content_type(&headers),
+            Some("application/json".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn get_status_text_should_work() {
+        let mut server_guard = mockito::Server::new();
+        let _m = mock_for_url(
+            &mut server_guard,
+            "/todo",
+            json!({"id": 1, "title": "todo"}),
+        );
+        let res = get_response(server_guard, "/todo", &Default::default()).await;
+
+        assert_eq!(
+            get_status_text(&res.into_inner()).unwrap(),
+            "HTTP/1.1 200 OK"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_header_text_should_work() {
+        let mut server_guard = mockito::Server::new();
+        let _m = mock_for_url(
+            &mut server_guard,
+            "/todo",
+            json!({"id": 1, "title": "todo"}),
+        );
+        let res = get_response(server_guard, "/todo", &Default::default()).await;
+
+        assert_eq!(
+            get_header_text(
+                &res.into_inner(),
+                &["connection".into(), "content-length".into(), "date".into()]
+            )
+            .unwrap(),
+            "content-type:\"application/json\"\n\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_body_text_should_work() {
+        let mut server_guard = mockito::Server::new();
+        let body = json!({"id": 1, "title": "todo"});
+        let _m = mock_for_url(&mut server_guard, "/todo", body);
+        let res = get_response(server_guard, "/todo", &Default::default()).await;
+
+        assert_eq!(
+            get_body_text(res.into_inner(), &[]).await.unwrap(),
+            serde_json::to_string_pretty(&json!({"id": 1, "title": "todo"})).unwrap()
+        );
+    }
+
+    fn mock_for_url(
+        server_guard: &mut mockito::ServerGuard,
+        path_and_query: &str,
+        res_body: serde_json::Value,
+    ) -> mockito::Mock {
+        server_guard
+            .mock("GET", path_and_query)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::to_string(&res_body).unwrap())
+            .create()
+    }
+
+    async fn get_response(
+        server: mockito::ServerGuard,
+        path_and_query: &str,
+        args: &ExtraArgs,
+    ) -> ResponseExt {
+        let profile = get_profile(&server.url(), &path_and_query);
+
+        profile.send(&args).await.unwrap()
+    }
+
+    fn get_profile(url: &str, path_and_query: &str) -> RequestProfile {
+        let url = get_url(url, path_and_query);
+        // RequestProfile::new(Method::GET, url, params, HeaderMap::new(), None)
+
+        RequestProfile::from_str(url.as_str()).unwrap()
+    }
+
+    fn get_url(url: &str, path: &str) -> Url {
+        Url::parse(&format!("{}{}", url, path)).unwrap()
+    }
 }

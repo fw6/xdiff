@@ -28,3 +28,19 @@ impl IntoIterator for ExtraArgs {
         ])
     }
 }
+
+impl ExtraArgs {
+    pub fn new_with_headers(headers: Vec<(String, String)>) -> Self {
+        Self {
+            headers,
+            ..Default::default()
+        }
+    }
+
+    pub fn new_with_query(query: Vec<(String, String)>) -> Self {
+        Self {
+            query,
+            ..Default::default()
+        }
+    }
+}
